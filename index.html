@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="ITLALA - discover and try on curated wardrobes. Fast, modern, and privacy friendly." />
+  <meta name="keywords" content="fashion, wardrobe, try-on, virtual fitting, clothing, itlala" />
+  <meta name="author" content="ITLALA" />
+  <link rel="icon" type="image/x-icon" href="./src/assets/Logo/Logo.avif" />
+
+  <!-- Preload critical images with explicit dimensions to prevent CLS -->
+  <link rel="preload" as="image" href="./src/assets/home/images/mainImg1.avif" fetchpriority="high" />
+  <link rel="preload" as="image" href="./src/assets/Logo/Logo.avif" fetchpriority="high" />
+
+  <!-- Non-blocking Google Fonts with font-display=swap -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" media="print"
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Montserrat:wght@100..900&display=swap"
+    onload="this.media='all'" />
+  <noscript>
+    <link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Montserrat:wght@100..900&display=swap" />
+  </noscript>
+
+  <!-- DNS prefetch for external APIs -->
+  <link rel="dns-prefetch" href="https://itlala.up.railway.app" />
+
+  <meta property="og:title" content="ITLALA" />
+  <meta property="og:description"
+    content="Discover and try curated wardrobes with ITLALA. Fast, secure, and privacy-respecting." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/src/assets/Logo/Logo.avif" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <meta name="theme-color" content="#0f172a" />
+  <title>ITLALA</title>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
+</html>

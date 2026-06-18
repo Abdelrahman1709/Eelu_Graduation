@@ -1,0 +1,301 @@
+import nest_asyncio
+nest_asyncio.apply()  # تهيئة الـ Event Loop
+
+# =====================================================================
+# ITLALA Enterprise Outfit VTON API - Perfect Layering (Bottom -> Top) 🚀
+# =====================================================================
+
+import os
+import sys
+import warnings
+warnings.filterwarnings('ignore')
+
+os.environ["PYTORCH_JIT"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+print("=" * 60)
+print("🚀 ITLALA Outfit API - Perfect Layering Edition")
+print("=" * 60)
+
+# 1. التثبيت
+print("\n[1/6] 📥 Installing dependencies...")
+dependencies = [
+    "pip install -q diffusers transformers safetensors accelerate",
+    "pip install -q fastapi uvicorn pyngrok python-multipart nest-asyncio",
+    "pip install -q pillow opencv-python scipy scikit-image",
+    "pip install -q pydantic fvcore cloudpickle av"
+]
+for cmd in dependencies:
+    print(f"  └─ {cmd.split('install -q ')[-1].split()[0]}...", end=" ")
+    os.system(cmd + " > /dev/null 2>&1")
+    print("✓")
+
+# 2. سحب الكود
+print("\n[2/6] 🔗 Cloning CatVTON repository...")
+if not os.path.exists('/content/CatVTON'):
+    os.system("git clone -q https://github.com/Zheng-Chong/CatVTON.git /content/CatVTON")
+    print("  └─ Repository cloned ✓")
+else:
+    print("  └─ Repository already exists ✓")
+
+sys.path.insert(0, '/content/CatVTON')
+
+print("\n[3/6] 🔧 Configuring environment...")
+import torch
+import asyncio
+import base64
+import io
+import json
+from PIL import Image
+import numpy as np
+import cv2
+import gc
+from dataclasses import dataclass
+import logging
+from datetime import datetime
+
+# حل مشكلة الـ JIT
+def mock_jit_script(obj, optimize=None, _frames_up=0, _rcb=None):
+    return obj
+torch.jit.script = mock_jit_script
+print("  └─ PyTorch configured ✓")
+
+# =====================================================================
+# CONFIGURATION
+# =====================================================================
+@dataclass
+class CoLabConfig:
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    weight_dtype: torch.dtype = torch.float16
+    inference_steps_upper: int = 24
+    inference_steps_lower: int = 50
+    guidance_scale_upper: float = 4.5
+    guidance_scale_lower: float = 2.5
+    person_image_size: tuple = (768, 1024)
+    cloth_image_size: tuple = (768, 1024)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+gpu_lock = asyncio.Lock()
+
+# 4. تحميل الأوزان وتجهيز الـ Pipeline
+print("\n[4/6] 📡 Loading CatVTON model (Standard Attention)...")
+
+import huggingface_hub
+if getattr(huggingface_hub, 'cached_download', None) is None:
+    huggingface_hub.cached_download = huggingface_hub.hf_hub_download
+import sys
+sys.modules['huggingface_hub'].cached_download = huggingface_hub.hf_hub_download
+
+try:
+    from model.pipeline import CatVTONPipeline
+    from model.cloth_masker import AutoMasker
+    from utils import resize_and_crop, resize_and_padding
+    from huggingface_hub import snapshot_download
+
+    config = CoLabConfig()
+    repo_path = snapshot_download(repo_id="zhengchong/CatVTON")
+
+    pipeline = CatVTONPipeline(
+        base_ckpt="runwayml/stable-diffusion-inpainting",
+        attn_ckpt="zhengchong/CatVTON",
+        attn_ckpt_version="mix",
+        weight_dtype=config.weight_dtype,
+        use_tf32=True,
+        device=config.device,
+        skip_safety_check=True
+    )
+
+    automasker = AutoMasker(
+        densepose_ckpt=os.path.join(repo_path, "DensePose"),
+        schp_ckpt=os.path.join(repo_path, "SCHP"),
+        device=config.device,
+    )
+    print("  └─ Model loaded successfully ✓")
+
+except Exception as e:
+    print(f"  └─ Error loading model: {e}")
+    raise
+
+# 5. بناء سيرفر الـ FastAPI
+print("\n[5/6] 🌐 Setting up FastAPI...")
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional
+import uvicorn
+
+app = FastAPI(title="ITLALA VTON API", version="6.0-Bottom-First-Layering")
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
+)
+
+class TryOnRequest(BaseModel):
+    person_image_b64: str = Field(...)
+    upper_cloth_b64: Optional[str] = Field(None)
+    lower_cloth_b64: Optional[str] = Field(None)
+    overall_cloth_b64: Optional[str] = Field(None) 
+    outer_cloth_b64: Optional[str] = Field(None)
+    seed: Optional[int] = None
+
+class TryOnResponse(BaseModel):
+    success: bool
+    result_b64: Optional[str] = None
+    processing_time_ms: float = 0
+    error: Optional[str] = None
+
+def load_image(image_bytes: bytes) -> Image.Image:
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+        img = img.convert('RGBA')
+        bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
+        bg.paste(img, (0, 0), img)
+        return bg.convert('RGB')
+    return img.convert('RGB')
+
+def blend_and_postprocess(person_img, result_image, mask, is_lower=False):
+    mask_np = np.array(mask).astype(np.float32) / 255.0
+    mask_np = cv2.GaussianBlur(mask_np, (15, 15), 0)
+    mask_expanded = np.expand_dims(mask_np, axis=2)
+    orig_np = np.array(person_img).astype(np.float32)
+    gen_np = np.array(result_image).astype(np.float32)
+    blended = gen_np * mask_expanded + orig_np * (1.0 - mask_expanded)
+    final_img = Image.fromarray(blended.astype(np.uint8))
+
+    if is_lower:
+        result_np = np.array(final_img)
+        kernel_sharpening = np.array([[0, -0.5, 0], [-0.5, 3, -0.5], [0, -0.5, 0]])
+        sharpened_np = cv2.filter2D(result_np, -1, kernel_sharpening)
+        lab = cv2.cvtColor(sharpened_np, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l)
+        mask_uint8 = (mask_np * 255).astype(np.uint8)
+        l_final = np.where(mask_uint8 > 128, l_enhanced, l)
+        final_img = Image.fromarray(cv2.cvtColor(cv2.merge([l_final, a, b]), cv2.COLOR_LAB2RGB))
+    return final_img
+
+@app.post("/api/tryon", response_model=TryOnResponse)
+async def process_tryon(req: TryOnRequest):
+    import time
+    start_time = time.time()
+    async with gpu_lock:
+        try:
+            person_bytes = base64.b64decode(req.person_image_b64.split(",")[-1])
+            current_person_img = load_image(person_bytes)
+            current_person_img = resize_and_crop(current_person_img, config.person_image_size)
+            seed = req.seed if req.seed is not None else np.random.randint(0, 2**32)
+
+            # 1. لو موجود فستان بيتم تطبيقه أولاً
+            if req.overall_cloth_b64:
+                overall_bytes = base64.b64decode(req.overall_cloth_b64.split(",")[-1])
+                overall_img = load_image(overall_bytes)
+                overall_img = resize_and_padding(overall_img, config.cloth_image_size)
+                with torch.inference_mode():
+                    mask_overall = automasker(current_person_img, "overall")['mask']
+                    generator = torch.Generator(device=config.device).manual_seed(seed)
+                    result_overall = pipeline(
+                        image=current_person_img, condition_image=overall_img, mask=mask_overall,
+                        num_inference_steps=config.inference_steps_upper, guidance_scale=config.guidance_scale_upper, generator=generator
+                    )[0]
+                current_person_img = blend_and_postprocess(current_person_img, result_overall, mask_overall, is_lower=False)
+                torch.cuda.empty_cache()
+            
+            # 2. وإلا بنلبس البنطلون أولاً ثم التيشرت
+            else:
+                # ------ تطبيق البنطلون (Lower) أولاً ------
+                if req.lower_cloth_b64:
+                    lower_bytes = base64.b64decode(req.lower_cloth_b64.split(",")[-1])
+                    lower_img = load_image(lower_bytes)
+                    lower_img = resize_and_padding(lower_img, config.cloth_image_size)
+                    with torch.inference_mode():
+                        mask_lower = automasker(current_person_img, "lower")['mask']
+                        generator = torch.Generator(device=config.device).manual_seed(seed)
+                        result_lower = pipeline(
+                            image=current_person_img, condition_image=lower_img, mask=mask_lower,
+                            num_inference_steps=config.inference_steps_lower, guidance_scale=config.guidance_scale_lower, generator=generator
+                        )[0]
+                    current_person_img = blend_and_postprocess(current_person_img, result_lower, mask_lower, is_lower=True)
+                    torch.cuda.empty_cache()
+
+                # ------ ثم تطبيق التيشرت (Upper) ثانياً ليركب فوق البنطلون ------
+                if req.upper_cloth_b64:
+                    upper_bytes = base64.b64decode(req.upper_cloth_b64.split(",")[-1])
+                    upper_img = load_image(upper_bytes)
+                    upper_img = resize_and_padding(upper_img, config.cloth_image_size)
+                    with torch.inference_mode():
+                        mask_upper = automasker(current_person_img, "upper")['mask']
+                        generator = torch.Generator(device=config.device).manual_seed(seed)
+                        result_upper = pipeline(
+                            image=current_person_img, condition_image=upper_img, mask=mask_upper,
+                            num_inference_steps=config.inference_steps_upper, guidance_scale=config.guidance_scale_upper, generator=generator
+                        )[0]
+                    current_person_img = blend_and_postprocess(current_person_img, result_upper, mask_upper, is_lower=False)
+                    torch.cuda.empty_cache()
+
+            # 3. أخيراً لو فيه جاكت (Layering)، بنحطه كطبقة نهائية فوق الكل
+            if req.outer_cloth_b64:
+                outer_bytes = base64.b64decode(req.outer_cloth_b64.split(",")[-1])
+                outer_img = load_image(outer_bytes)
+                outer_img = resize_and_padding(outer_img, config.cloth_image_size)
+                with torch.inference_mode():
+                    mask_outer = automasker(current_person_img, "upper")['mask']
+                    generator = torch.Generator(device=config.device).manual_seed(seed)
+                    result_outer = pipeline(
+                        image=current_person_img, condition_image=outer_img, mask=mask_outer,
+                        num_inference_steps=config.inference_steps_upper, guidance_scale=config.guidance_scale_upper, generator=generator
+                    )[0]
+                current_person_img = blend_and_postprocess(current_person_img, result_outer, mask_outer, is_lower=False)
+                torch.cuda.empty_cache()
+
+            # 4. حفظ النتيجة
+            buffered = io.BytesIO()
+            current_person_img.save(buffered, format="JPEG", quality=95)
+            encoded = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+            return TryOnResponse(success=True, result_b64=f"data:image/jpeg;base64,{encoded}", processing_time_ms=(time.time() - start_time) * 1000)
+        
+        except Exception as e:
+            return TryOnResponse(success=False, error=str(e))
+        finally:
+            torch.cuda.empty_cache()
+            gc.collect()
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "device": config.device, "timestamp": datetime.now().isoformat()}
+
+@app.get("/")
+async def root():
+    return {"message": "ITLALA VTON API is running successfully!"}
+
+print("\n" + "=" * 60)
+print("✅ Outfit Pipeline Setup Complete & Secured!")
+print("=" * 60)
+
+print("\n[NGROK SETUP]")
+print("Enter your ngrok token (Leave empty to use local access only):")
+ngrok_token = input().strip()
+
+if ngrok_token:
+    print("\nSetting up ngrok...")
+    try:
+        from pyngrok import ngrok as ngrok_module
+        ngrok_module.set_auth_token(ngrok_token)
+        public_url = ngrok_module.connect(8000).public_url
+        print(f"✅ Ngrok Links Ready:")
+        print(f"   🔗 React API Endpoint (JSON): {public_url}/api/tryon")
+    except Exception as e:
+        print(f"⚠️ Ngrok setup failed: {e}")
+else:
+    print("⚠️ Ngrok skipped - using local loopback")
+
+print("\n[SERVER] Starting FastAPI server on port 8000...")
+os.system("fuser -k 8000/tcp > /dev/null 2>&1")
+config_server = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+server = uvicorn.Server(config_server)
+
+try:
+    await server.serve()
+except KeyboardInterrupt:
+    print("\n\n✋ Server stopped.")

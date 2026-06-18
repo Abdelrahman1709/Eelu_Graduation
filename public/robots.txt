@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Sitemap: /sitemap.xml
+
+# Disallow any private or build output folders if present
+Disallow: /node_modules/
+Disallow: /dist/
