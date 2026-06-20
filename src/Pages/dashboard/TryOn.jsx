@@ -34,12 +34,14 @@ import { useNavbar } from "../../context/NavbarContext";
 import { useNavigate } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
 import { trackModelUsage } from "../../services/userService";
+import { getWardrobe } from "../../services/wardrobeService";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import { createPortal } from "react-dom";
+import AvatarGeneratorModal from "./AvatarGeneratorModal";
 
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -52,22 +54,7 @@ L.Icon.Default.mergeOptions({
 // API
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API_BASE_URL = "https://itlala.up.railway.app/api";
-const getToken = () => localStorage.getItem("token");
-const getAuthHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${getToken()}`,
-});
-const getWardrobe = async () => {
-  const response = await fetch(`${API_BASE_URL}/wardrobe`, {
-    method: "GET",
-    headers: getAuthHeaders(),
-  });
-  const result = await response.json();
-  if (!response.ok || !result.success)
-    throw new Error(result.message || "Failed to fetch wardrobe");
-  return result.data || [];
-};
+// Wardrobe loading uses the shared wardrobe service to preserve auth refresh behavior.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -142,9 +129,38 @@ function getItemType(item) {
 // BEFORE/AFTER SLIDER  — portrait ratio, full image visible
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BeforeAfterSlider = ({ before, after, loading }) => {
+const BeforeAfterSlider = ({ before, after, loading, flipAfter = false }) => {
   const [position, setPosition] = useState(50);
   const containerRef = useRef(null);
+  const animRef = useRef(null);
+
+  useEffect(() => {
+    // Animate handle while processing
+    if (loading) {
+      let dir = 1;
+      setPosition(0);
+      animRef.current = setInterval(() => {
+        setPosition((p) => {
+          let next = p + dir * 6;
+          if (next >= 100) {
+            next = 100;
+            dir = -1;
+          } else if (next <= 0) {
+            next = 0;
+            dir = 1;
+          }
+          return next;
+        });
+      }, 60);
+    }
+
+    return () => {
+      if (animRef.current) {
+        clearInterval(animRef.current);
+        animRef.current = null;
+      }
+    };
+  }, [loading]);
 
   if (!before)
     return (
@@ -161,7 +177,7 @@ const BeforeAfterSlider = ({ before, after, loading }) => {
       ref={containerRef}
       className="relative w-full max-w-xs mx-auto  aspect-[3/4] rounded-3xl overflow-hidden bg-black shadow-2xl select-none"
     >
-      {/* Original — right / background */}
+      {/* Base Original Image (always visible underneath) */}
       <img
         src={before}
         className="absolute inset-0 w-full h-full object-contain bg-black"
@@ -169,38 +185,35 @@ const BeforeAfterSlider = ({ before, after, loading }) => {
         draggable={false}
       />
 
-      {/* AI result — left overlay */}
+      {/* AI Result Overlay */}
       {after && (
-        <div
-          className="absolute inset-y-0 left-0 overflow-hidden border-r-2 border-white/70 z-10"
-          style={{ width: `${position}%` }}
-        >
-          <img
-            src={after}
-            className="absolute inset-0 h-full object-contain bg-black"
-            style={{
-              width: containerRef.current?.offsetWidth || 400,
-              maxWidth: "none",
-            }}
-            alt="AI Result"
-            draggable={false}
-          />
-        </div>
+        <img
+          src={after}
+          className="absolute inset-0 w-full h-full object-contain"
+          alt="AI Result"
+          draggable={false}
+          style={{ clipPath: `inset(0 0 0 ${position}%)` }}
+        />
       )}
 
-      {/* Invisible range input */}
+      {/* Loading overlay effect */}
+      {loading && (
+        <div className="absolute inset-0 bg-black/20 pointer-events-none" />
+      )}
+
+      {/* Invisible range input (kept for accessibility) */}
       <input
         type="range"
         min="0"
         max="100"
         value={position}
         onChange={(e) => setPosition(Number(e.target.value))}
-        disabled={loading || !after}
+        disabled={loading}
         className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize z-30"
       />
 
-      {/* Drag handle */}
-      {after && (
+      {/* Moving handle shown during loading or when a result is present */}
+      {(loading || after) && (
         <div
           className="absolute top-1/2 -translate-y-1/2 z-20 pointer-events-none"
           style={{ left: `${position}%` }}
@@ -215,7 +228,7 @@ const BeforeAfterSlider = ({ before, after, loading }) => {
       <div className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/70 backdrop-blur-sm text-[9px] uppercase font-bold text-white border border-white/10 z-10 pointer-events-none">
         Original
       </div>
-      {after && (
+      {after && !loading && (
         <div className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-[#7c3aed]/90 backdrop-blur-sm text-[9px] uppercase font-bold text-white z-10 pointer-events-none">
           AI Result
         </div>
@@ -639,6 +652,7 @@ const MapClickHandler = ({ onMapClick }) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MobileTabBar = ({ activeTab, setActiveTab, outfitCount }) => {
+
   const tabs = [
     { id: "chat", label: "Stylist", icon: Bot },
     { id: "wardrobe", label: "Wardrobe", icon: Shirt },
@@ -701,7 +715,7 @@ function TryOn() {
   const [aiLoading, setAiLoading] = useState(false);
 
   const [userPhoto, setUserPhoto] = useState(null);
-  const [sampleModalOpen, setSampleModalOpen] = useState(false);
+  const [avatarModalOpen, setAvatarModalOpen] = useState(false);
   const [vtoLoading, setVtoLoading] = useState(false);
   const [vtoLoadingText, setVtoLoadingText] = useState("");
   const [vtoResult, setVtoResult] = useState(null);
@@ -982,13 +996,12 @@ ${event ? `Occasion: ${event}.` : ""}`;
       ];
 
       // ========== API KEYS LIST ==========
-      // You can add more API keys to the VITE_GROQ_API_KEYS environment variable, separated by commas.
-      const envKeys = import.meta.env.VITE_GROQ_API_KEYS?.split(',') || [];
+      // You can add more API keys to this array. Just put them in quotes and separate by commas.
+      const rawGroqKeys = import.meta.env.VITE_GROQ_API_KEYS || "";
       const apiKeys = [
         import.meta.env.VITE_GROQ_API_KEY,
-        ...envKeys,
-        // "NEW_API_KEY_HERE",
-      ].map(k => k?.trim()).filter(Boolean); // Filters out empty or undefined keys
+        ...rawGroqKeys.split(',').map(k => k.trim())
+      ].filter(Boolean); // Filters out empty or undefined keys
 
       let response;
       let data;
@@ -1234,7 +1247,7 @@ ${event ? `Occasion: ${event}.` : ""}`;
     let currentPersonBase64 = userPhoto.b64;
 
     try {
-      let API_URL = import.meta.env.VITE_VTON_API_URL || "https://87cb-156-200-247-2.ngrok-free.app";
+      let API_URL = import.meta.env.VITE_VTON_API_URL;
       API_URL = API_URL.replace(/\/+$/, "");
       if (API_URL.endsWith("/api/tryon")) {
         API_URL = API_URL.replace("/api/tryon", "");
@@ -1268,10 +1281,8 @@ ${event ? `Occasion: ${event}.` : ""}`;
 
       ////////////////////////////////////////{APIS}//////////////////////////////////////////////////
       //////////////////////////////////////////////////////////////////////////////////////////
-      const API_ENDPOINTS = [
-        "https://termination-ant-issue-seriously.trycloudflare.com", // Local (الأولوية)
-        "https://turban-fiction-ambush.ngrok-free.dev" // Colab (البديل)
-      ];
+      const rawEndpoints = import.meta.env.VITE_VTON_ENDPOINTS || "";
+      const API_ENDPOINTS = rawEndpoints.split(",").map(url => url.trim()).filter(Boolean);
 
       let data = null;
       let lastError = null;
@@ -1596,16 +1607,23 @@ ${event ? `Occasion: ${event}.` : ""}`;
         {userPhoto ? (
           /* Full image — object-contain so nothing gets cut */
 
-          <div className="relative w-full bg-transparent">
+          <div className="relative w-full bg-transparent overflow-hidden">
             <img
               src={userPhoto.preview}
               alt="Portrait"
-              className="w-full h-auto object-contain block"
+              className={`w-full h-auto object-contain block transition-all duration-500 ${vtoLoading ? 'brightness-75' : ''}`}
               style={{ maxHeight: 380 }}
             />
+            {vtoLoading && (
+              <>
+                <div className="scanner-overlay" />
+                <div className="scanner-line" />
+              </>
+            )}
             <button
               onClick={() => document.getElementById(inputId).click()}
-              className="absolute bottom-2 md:bottom-3 right-2 md:right-3 bg-black/70 border border-white/20 text-white text-[8px] md:text-[9px] font-black uppercase tracking-widest px-2 md:px-3 py-1 md:py-1.5 rounded-full backdrop-blur-sm hover:bg-[#7c3aed]/50 transition-colors"
+              disabled={vtoLoading}
+              className="absolute bottom-2 md:bottom-3 right-2 md:right-3 bg-black/70 border border-white/20 text-white text-[8px] md:text-[9px] font-black uppercase tracking-widest px-2 md:px-3 py-1 md:py-1.5 rounded-full backdrop-blur-sm hover:bg-[#7c3aed]/50 transition-colors disabled:opacity-30 disabled:pointer-events-none"
             >
               <Camera size={10} className="inline mr-1" />
               Change
@@ -1648,34 +1666,6 @@ ${event ? `Occasion: ${event}.` : ""}`;
     }
   }
 
-  const SamplePicker = () => (
-    <div>
-      {sampleModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-md" onClick={() => setSampleModalOpen(false)} />
-          <div className="relative z-10 w-full max-w-3xl bg-transparent rounded-2xl p-6 border border-white/10">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-white">Choose Your Portrait</h3>
-              <button onClick={() => setSampleModalOpen(false)} className="text-white/60 hover:text-white transition"><X size={20} /></button>
-            </div>
-            <p className="text-sm text-white/70 mb-2">
-              {user?.gender && String(user.gender).toLowerCase() === "male"
-                ? "Select from our male model collection to try on outfits instantly!"
-                : "Select from our female model collection to try on outfits instantly!"}
-            </p>
-            <p className="text-xs text-white/50 mb-4">Pick any image and start styling without uploading your own photo.</p>
-            <div className="flex gap-4 justify-center">
-              {sampleImages.map((img, idx) => (
-                <button key={idx} onClick={() => selectSampleImage(img)} className="rounded-xl overflow-hidden border border-transparent hover:border-violet-400/40 transition-all hover:shadow-lg hover:shadow-violet-400/20 flex-1">
-                  <img src={img} alt={`sample-${idx}`} className="w-full h-96 object-cover" />
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
 
   const OutfitGrid = () => {
     // Hide if no outfit selected
@@ -1772,13 +1762,9 @@ ${event ? `Occasion: ${event}.` : ""}`;
         )}
       </div>
       <div className="p-5 bg-transparent relative">
-        <BeforeAfterSlider
-          before={userPhoto?.preview}
-          after={vtoResult}
-          loading={vtoLoading}
-        />
-        {vtoLoading && (
-          <div className="absolute inset-0 bg-transparent backdrop-blur-2xl flex flex-col items-center justify-center z-40 rounded-3xl">
+        {vtoLoading ? (
+          /* Loading mirror - only displays the spinning loading chip and loading text */
+          <div className="w-full aspect-[3/4] max-w-xs mx-auto flex flex-col items-center justify-center bg-white/[0.01] border border-white/10 rounded-3xl p-6 relative overflow-hidden">
             <div className="relative mb-8">
               <div className="w-20 h-20 border-2 border-white/5 rounded-full" />
               <div className="w-20 h-20 border-t-4 border-[#7c3aed] rounded-full animate-spin absolute inset-0 shadow-[0_0_30px_rgba(124,58,237,0.5)]" />
@@ -1787,27 +1773,46 @@ ${event ? `Occasion: ${event}.` : ""}`;
                 className="absolute inset-0 m-auto text-white animate-pulse"
               />
             </div>
-            <p className="text-sm font-black uppercase tracking-[0.3em] text-white shimmer text-center px-6">
+            <p className="text-xs font-black uppercase tracking-[0.25em] text-white shimmer text-center px-6 leading-relaxed">
               {vtoLoadingText}
             </p>
-            <div className="mt-5 flex items-center gap-2 px-4 py-2 rounded-full bg-[#7c3aed]/10 border border-[#7c3aed]/30">
+            <div className="mt-6 flex items-center gap-2 px-4 py-2 rounded-full bg-[#7c3aed]/10 border border-[#7c3aed]/30">
               <ShieldCheck size={13} className="text-[#7c3aed]" />
               <span className="text-[9px] text-white font-bold uppercase tracking-widest">
                 Identity Preserved
               </span>
             </div>
           </div>
-        )}
-        {vtoResult && !vtoLoading && (
-          <a
-            href={vtoResult}
-            download="itlala-vto.jpg"
-            target="_blank"
-            rel="noreferrer"
-            className="mt-4 w-full flex items-center justify-center gap-2 bg-white/10 border border-white/20 text-white py-3 rounded-2xl font-black text-[11px] uppercase tracking-[0.12em] hover:bg-white/15 transition-all active:scale-95"
-          >
-            <Download size={15} /> Save Portrait
-          </a>
+        ) : vtoResult ? (
+          /* Result is ready - show the before/after slider and download button */
+          <>
+            <BeforeAfterSlider
+              before={userPhoto?.preview}
+              after={vtoResult}
+              loading={vtoLoading}
+              flipAfter={false}
+            />
+            <a
+              href={vtoResult}
+              download="itlala-vto.jpg"
+              target="_blank"
+              rel="noreferrer"
+              className="mt-4 w-full flex items-center justify-center gap-2 bg-white/10 border border-white/20 text-white py-3 rounded-2xl font-black text-[11px] uppercase tracking-[0.12em] hover:bg-white/15 transition-all active:scale-95"
+            >
+              <Download size={15} /> Save Portrait
+            </a>
+          </>
+        ) : (
+          /* Placeholder state - before try-on has run */
+          <div className="w-full aspect-[3/4] max-w-xs mx-auto flex flex-col items-center justify-center opacity-40 gap-4 rounded-3xl border border-dashed border-white/10 p-6 bg-white/[0.02]">
+            <ScanLine size={32} className="text-[#7c3aed] animate-pulse" />
+            <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white text-center">
+              Mirror Standby
+            </span>
+            <span className="text-[9px] text-white/50 text-center leading-relaxed max-w-[200px]">
+              Select items from your wardrobe and click Try On to reflect your new look in the mirror.
+            </span>
+          </div>
         )}
       </div>
     </div>
@@ -1819,12 +1824,12 @@ ${event ? `Occasion: ${event}.` : ""}`;
       <div>
         <button
           type="button"
-          onClick={() => setSampleModalOpen(true)}
-          className="text-xs px-4 py-2 rounded-full bg-gradient-to-r from-[#7c3aed]/20 to-[#4f46e5]/20 hover:from-[#7c3aed]/30 hover:to-[#4f46e5]/30 text-white font-semibold border border-[#7c3aed]/30 transition-all"
+          onClick={() => setAvatarModalOpen(true)}
+          className="text-xs px-4 py-2 rounded-full bg-gradient-to-r from-[#7c3aed]/20 to-[#4f46e5]/20 hover:from-[#7c3aed]/30 hover:to-[#4f46e5]/30 text-white font-semibold border border-[#7c3aed]/30 transition-all flex items-center gap-2"
         >
-          Or pick a sample portrait
+          <Sparkles size={14} /> Create your Avatar
         </button>
-        <p className="text-[10px] text-white/50 mt-2">If you prefer not to upload your own photo, we have sample portraits to choose from!</p>
+        <p className="text-[10px] text-white/50 mt-2">Use our AI generator to build your perfect digital twin!</p>
       </div>
       <PortraitUpload inputId="photo-mob" />
       <OutfitGrid />
@@ -1867,12 +1872,34 @@ ${event ? `Occasion: ${event}.` : ""}`;
         .animate-fade-in { animation: fade-in 0.35s ease-out forwards; }
         @keyframes shimmer { 0%,100%{opacity:.5} 50%{opacity:1} }
         .shimmer { animation: shimmer 2s ease-in-out infinite; }
+        @keyframes scan {
+          0% { top: 0%; }
+          50% { top: 100%; }
+          100% { top: 0%; }
+        }
+        .scanner-line {
+          position: absolute;
+          left: 0;
+          right: 0;
+          height: 3px;
+          background: linear-gradient(90deg, transparent, #7c3aed, #c084fc, #7c3aed, transparent);
+          box-shadow: 0 0 15px 4px rgba(124, 58, 237, 0.6);
+          animation: scan 2.5s linear infinite;
+          z-index: 20;
+        }
+        .scanner-overlay {
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(180deg, rgba(124, 58, 237, 0.05) 0%, rgba(124, 58, 237, 0.15) 100%);
+          pointer-events: none;
+          z-index: 10;
+        }
       `}</style>
 
       {/* ─── SETUP ─── */}
       {step === "setup" && (
 
-        <div className="max-w-7xl mx-auto mt-8 md:mt-12 lg:mt-20 flex flex-col md:flex-row gap-8 md:gap-12 lg:gap-16 items-center justify-between px-3 md:px-4 animate-fade-in">
+        <div className="max-w-7xl mx-auto mt-16 md:mt-12 lg:mt-20 flex flex-col md:flex-row gap-8 md:gap-12 lg:gap-16 items-center justify-between px-3 md:px-4 animate-fade-in">
 
           {/* Mobile hero strip */}
           <div className="md:hidden h-auto relative overflow-hidden">
@@ -2153,7 +2180,7 @@ ${event ? `Occasion: ${event}.` : ""}`;
       {step === "chat" && (
         <>
           {/* Top bar */}
-          <div className="sticky top-0 z-40 bg-transparent backdrop-blur-xl border-b border-white/5 px-3 md:px-8 py-2.5 md:py-3 flex items-center gap-2 md:gap-3 flex-wrap mt-10">
+          <div className="md:sticky md:top-0 static z-40 bg-transparent backdrop-blur-xl border-b border-white/5 px-3 md:px-8 py-2.5 md:py-3 flex items-center gap-2 md:gap-3 flex-wrap mt-10">
             <div className="flex items-center gap-2 flex-shrink-0">
               <div className="w-6 md:w-7 h-6 md:h-7 rounded-lg bg-gradient-to-tr from-[#7c3aed] to-[#4f46e5] flex items-center justify-center">
                 <Sparkles size={12} className="text-white" />
@@ -2174,13 +2201,21 @@ ${event ? `Occasion: ${event}.` : ""}`;
                 </div>
               )}
             </div>
+            {/* Create Avatar Button on Mobile */}
+            <button
+              type="button"
+              onClick={() => setAvatarModalOpen(true)}
+              className="lg:hidden text-[9px] uppercase tracking-wider font-bold px-3 py-1.5 rounded-full bg-gradient-to-r from-[#7c3aed]/20 to-[#4f46e5]/20 hover:from-[#7c3aed]/30 hover:to-[#4f46e5]/30 text-white border border-[#7c3aed]/30 transition-all flex items-center gap-1 ml-auto flex-shrink-0"
+            >
+              <Sparkles size={10} /> Create Avatar
+            </button>
             <button
               onClick={() => {
                 setStep("setup");
                 setMessages([]);
                 setOutfit([]);
               }}
-              className="text-[8px] md:text-[9px] uppercase tracking-widest font-bold text-white/30 hover:text-white/60 transition-colors px-2 md:px-3 py-1 md:py-1.5 rounded-full border border-white/10 ml-auto flex-shrink-0"
+              className="text-[8px] md:text-[9px] uppercase tracking-widest font-bold text-white/30 hover:text-white/60 transition-colors px-2 md:px-3 py-1 md:py-1.5 rounded-full border border-white/10 ml-2 flex-shrink-0"
             >
               ← Back
             </button>
@@ -2224,12 +2259,12 @@ ${event ? `Occasion: ${event}.` : ""}`;
               <div>
                 <button
                   type="button"
-                  onClick={() => setSampleModalOpen(true)}
-                  className="text-xs px-4 py-2 rounded-full bg-gradient-to-r from-[#7c3aed]/20 to-[#4f46e5]/20 hover:from-[#7c3aed]/30 hover:to-[#4f46e5]/30 text-white font-semibold border border-[#7c3aed]/30 transition-all"
+                  onClick={() => setAvatarModalOpen(true)}
+                  className="text-xs px-4 py-2 rounded-full bg-gradient-to-r from-[#7c3aed]/20 to-[#4f46e5]/20 hover:from-[#7c3aed]/30 hover:to-[#4f46e5]/30 text-white font-semibold border border-[#7c3aed]/30 transition-all flex items-center gap-2"
                 >
-                  Or pick a sample portrait
+                  <Sparkles size={14} /> Create your Avatar
                 </button>
-                <p className="text-[10px] text-white/50 mt-2">If you prefer not to upload your own photo, we have sample portraits to choose from!</p>
+                <p className="text-[10px] text-white/50 mt-2">Use our AI generator to build your perfect digital twin!</p>
               </div>
               <PortraitUpload inputId="photo-desk" />
               <OutfitGrid />
@@ -2257,7 +2292,12 @@ ${event ? `Occasion: ${event}.` : ""}`;
           />
         </>
       )}
-      <SamplePicker />
+      <AvatarGeneratorModal 
+        isOpen={avatarModalOpen} 
+        onClose={() => setAvatarModalOpen(false)} 
+        onUseAvatar={(photoData) => setUserPhoto(photoData)}
+        defaultGender={user?.gender} 
+      />
     </div>
   );
 }
