@@ -53,7 +53,7 @@ function CustomSelect({ value, options, onChange, disabled }) {
       </button>
 
       {isOpen && (
-        <div className="absolute z-[100] mt-1.5 w-full bg-slate-900 border border-white/15 rounded-xl overflow-hidden shadow-2xl backdrop-blur-xl animate-fade-in max-h-60 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
+        <div className="absolute z-[1000] top-full left-0 mt-2 w-full border border-white/15 rounded-xl overflow-hidden shadow-2xl backdrop-blur-xl animate-fade-in max-h-60 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 bg-slate-950/95">
           {options.map((opt) => (
             <button
               key={opt}
@@ -90,7 +90,14 @@ export default function AvatarGeneratorModal({ isOpen, onClose, onUseAvatar, def
   const [currentSeed, setCurrentSeed] = useState(0);
 
   // Form State
-  const [gender, setGender] = useState(defaultGender === 'male' ? "Male / ذكر" : "Female / أنثى");
+  const isGenderFixed = defaultGender === 'male' || defaultGender === 'female';
+  const [gender, setGender] = useState(
+    defaultGender === 'male'
+      ? "Male / ذكر"
+      : defaultGender === 'female'
+        ? "Female / أنثى"
+        : "Female / أنثى"
+  );
   const [age, setAge] = useState(25);
   const [height, setHeight] = useState(165);
   const [weight, setWeight] = useState(65);
@@ -115,6 +122,11 @@ export default function AvatarGeneratorModal({ isOpen, onClose, onUseAvatar, def
 
   const [seedMode, setSeedMode] = useState("عشوائي (شخصية جديدة)");
   const [lastSeedState, setLastSeedState] = useState(0);
+
+  React.useEffect(() => {
+    if (defaultGender === 'male') setGender("Male / ذكر");
+    else if (defaultGender === 'female') setGender("Female / أنثى");
+  }, [defaultGender]);
 
   if (!isOpen) return null;
 
@@ -280,10 +292,16 @@ export default function AvatarGeneratorModal({ isOpen, onClose, onUseAvatar, def
               <div className="space-y-4 animate-fade-in">
                 <div>
                   <label className="text-[10px] uppercase text-white/50 font-bold mb-2 block">Gender</label>
-                  <div className="flex gap-2">
-                    <button onClick={() => setGender("Female / أنثى")} className={`flex-1 py-1.5 md:py-2 rounded-lg md:rounded-xl border text-xs md:text-sm font-bold transition-colors ${isFemale ? 'bg-[#7c3aed]/20 border-[#7c3aed] text-white' : 'border-white/10 text-white/50 hover:bg-white/5'}`}>Female</button>
-                    <button onClick={() => setGender("Male / ذكر")} className={`flex-1 py-1.5 md:py-2 rounded-lg md:rounded-xl border text-xs md:text-sm font-bold transition-colors ${!isFemale ? 'bg-[#7c3aed]/20 border-[#7c3aed] text-white' : 'border-white/10 text-white/50 hover:bg-white/5'}`}>Male</button>
-                  </div>
+                  {isGenderFixed ? (
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white font-semibold">
+                      {gender}
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <button onClick={() => setGender("Female / أنثى")} className={`flex-1 py-1.5 md:py-2 rounded-lg md:rounded-xl border text-xs md:text-sm font-bold transition-colors ${isFemale ? 'bg-[#7c3aed]/20 border-[#7c3aed] text-white' : 'border-white/10 text-white/50 hover:bg-white/5'}`}>Female</button>
+                      <button onClick={() => setGender("Male / ذكر")} className={`flex-1 py-1.5 md:py-2 rounded-lg md:rounded-xl border text-xs md:text-sm font-bold transition-colors ${!isFemale ? 'bg-[#7c3aed]/20 border-[#7c3aed] text-white' : 'border-white/10 text-white/50 hover:bg-white/5'}`}>Male</button>
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="text-[10px] uppercase text-white/50 font-bold mb-2 block">Age: {age}</label>
